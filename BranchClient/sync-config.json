@@ -1,0 +1,7 @@
+{
+    "ApiUrl": "https://your-central-server/biometricsapi",
+    "BranchGuid": "531F69F9-CBC5-4210-B144-573E21A43874",
+    "ApiKey": "",
+    "ConnectionString": "Server=.\\SQLEXPRESS;Database=BiometricDB;Trusted_Connection=True;TrustServerCertificate=True",
+    "BatchSize": 1500
+}
