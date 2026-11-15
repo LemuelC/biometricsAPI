@@ -1,0 +1,54 @@
+@biometricsAPI_HostAddress = https://localhost:7194
+@branchId = 00000000-0000-0000-0000-000000000000
+@apiKey = paste-key-from-genkey-here
+
+### Check URL + key
+GET {{biometricsAPI_HostAddress}}/api/ping
+X-Branch-Id: {{branchId}}
+X-Api-Key: {{apiKey}}
+
+### Upsert employees (run twice: 2nd time shows Unchanged = 1)
+POST {{biometricsAPI_HostAddress}}/api/employees/upsert
+X-Branch-Id: {{branchId}}
+X-Api-Key: {{apiKey}}
+Content-Type: application/json
+
+[
+  {
+    "employeeID": 1,
+    "employeeCode": "E0001",
+    "surname": "Dela Cruz",
+    "firstName": "Juan",
+    "fullName": "Dela Cruz, Juan",
+    "shiftID": 1,
+    "hourlyRate": 80,
+    "monthlyRate": 15000,
+    "dailyRate": 640,
+    "hdmfEmployee": 100,
+    "hdmfEmployer": 100,
+    "allowsLate": false,
+    "phicBracketID": 1,
+    "sssBracketID": 1,
+    "includeSSS": true,
+    "includeHDMF": true,
+    "includePHIC": true,
+    "includeTax": true,
+    "allowsUT": false,
+    "allowance": 0,
+    "allowsAbsences": false,
+    "isSave": true,
+    "isDeleted": false,
+    "encodedByID": 1,
+    "dateHired": "2024-01-15"
+  }
+]
+
+### List this branch's employees
+GET {{biometricsAPI_HostAddress}}/api/employees?page=1&pageSize=100
+X-Branch-Id: {{branchId}}
+X-Api-Key: {{apiKey}}
+
+### Get one
+GET {{biometricsAPI_HostAddress}}/api/employees/1
+X-Branch-Id: {{branchId}}
+X-Api-Key: {{apiKey}}
