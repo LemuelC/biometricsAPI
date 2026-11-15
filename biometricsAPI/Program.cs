@@ -63,12 +63,16 @@ builder.Services.AddSwaggerGen(c =>
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+// Swagger is on in every environment unless "EnableSwagger": false is set in appsettings.
+// The docs are public, but every endpoint still requires a valid branch API key.
+if (app.Configuration.GetValue("EnableSwagger", true))
 {
     app.UseSwagger();
-    app.UseSwaggerUI();
+    // Relative path so the UI also works when hosted under an IIS sub-path (e.g. /biometricsapi/swagger).
+    app.UseSwaggerUI(c => c.SwaggerEndpoint("v1/swagger.json", "biometricsAPI v1"));
 }
-else
+
+if (!app.Environment.IsDevelopment())
 {
     app.UseHsts();
 }
