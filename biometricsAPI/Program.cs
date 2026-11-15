@@ -2,6 +2,7 @@ using System.Threading.RateLimiting;
 using biometricsAPI.Data;
 using biometricsAPI.Security;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 
@@ -56,6 +57,23 @@ builder.Services.AddSwaggerGen(c =>
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+
+// Unhandled errors -> JSON 500. The exception is always logged; its message is only put in the
+// response when "ShowErrorDetails": true (turn on briefly to diagnose, e.g. database login errors).
+app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
+{
+    var error = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+    var showDetails = app.Configuration.GetValue("ShowErrorDetails", false);
+    context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+    await context.Response.WriteAsJsonAsync(new
+    {
+        status = 500,
+        error = showDetails && error is not null
+            ? $"{error.GetBaseException().GetType().Name}: {error.GetBaseException().Message}"
+            : "Internal server error. Set \"ShowErrorDetails\": true in appsettings.json to see the reason.",
+        traceId = context.TraceIdentifier,
+    });
+}));
 // Swagger is on in every environment unless "EnableSwagger": false is set in appsettings.
 // The docs are public, but every endpoint still requires a valid branch API key.
 if (app.Configuration.GetValue("EnableSwagger", true))
