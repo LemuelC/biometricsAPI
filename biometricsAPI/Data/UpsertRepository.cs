@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using System.Reflection;
 using biometricsAPI.Models;
@@ -6,32 +7,32 @@ using Microsoft.EntityFrameworkCore;
 
 namespace biometricsAPI.Data
 {
-    public class EmployeeRepository
+    /// <summary>
+    /// Sends a batch to a table's upsert procedure as one table-valued parameter:
+    /// one round trip, one transaction, set-based UPDATE + INSERT on the server.
+    /// Every table follows the same convention:
+    ///   procedure  dbo.usp_&lt;table&gt;_upsert (@BranchGUID, @Rows dbo.tt_&lt;table&gt; READONLY)
+    ///   returns    one row: Inserted, Updated, Unchanged
+    /// </summary>
+    public class UpsertRepository
     {
-        // EmployeeDto properties in declaration order = dbo.tt_m_employee column order.
-        private static readonly PropertyInfo[] DtoColumns = typeof(EmployeeDto)
-            .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-            .OrderBy(p => p.MetadataToken)
-            .ToArray();
+        // DTO properties in declaration order = table type column order.
+        private static readonly ConcurrentDictionary<Type, PropertyInfo[]> ColumnsByType = new();
 
         private readonly AppDbContext _db;
 
-        public EmployeeRepository(AppDbContext db)
+        public UpsertRepository(AppDbContext db)
         {
             _db = db;
         }
 
-        /// <summary>
-        /// Sends the whole batch to dbo.usp_m_employee_upsert as one table-valued parameter:
-        /// one round trip, one transaction, set-based UPDATE + INSERT on the server.
-        /// </summary>
-        public async Task<UpsertResult> UpsertAsync(Guid branchGuid, IReadOnlyList<EmployeeDto> rows, CancellationToken ct)
+        public async Task<UpsertResult> UpsertAsync<TDto>(string table, Guid branchGuid, IReadOnlyList<TDto> rows, CancellationToken ct)
         {
             var conn = (SqlConnection)_db.Database.GetDbConnection();
             await _db.Database.OpenConnectionAsync(ct);
             try
             {
-                await using var cmd = new SqlCommand("dbo.usp_m_employee_upsert", conn)
+                await using var cmd = new SqlCommand($"dbo.usp_{table}_upsert", conn)
                 {
                     CommandType = CommandType.StoredProcedure,
                     CommandTimeout = 120,
@@ -39,7 +40,7 @@ namespace biometricsAPI.Data
                 cmd.Parameters.Add(new SqlParameter("@BranchGUID", SqlDbType.UniqueIdentifier) { Value = branchGuid });
                 cmd.Parameters.Add(new SqlParameter("@Rows", SqlDbType.Structured)
                 {
-                    TypeName = "dbo.tt_m_employee",
+                    TypeName = $"dbo.tt_{table}",
                     Value = ToDataTable(rows),
                 });
 
@@ -53,17 +54,22 @@ namespace biometricsAPI.Data
             }
         }
 
-        private static DataTable ToDataTable(IEnumerable<EmployeeDto> rows)
+        private static DataTable ToDataTable<TDto>(IEnumerable<TDto> rows)
         {
+            var columns = ColumnsByType.GetOrAdd(typeof(TDto), t => t
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .OrderBy(p => p.MetadataToken)
+                .ToArray());
+
             var table = new DataTable();
-            foreach (var p in DtoColumns)
+            foreach (var p in columns)
                 table.Columns.Add(p.Name, Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType);
 
             foreach (var row in rows)
             {
-                var values = new object[DtoColumns.Length];
-                for (var i = 0; i < DtoColumns.Length; i++)
-                    values[i] = DtoColumns[i].GetValue(row) ?? DBNull.Value;
+                var values = new object[columns.Length];
+                for (var i = 0; i < columns.Length; i++)
+                    values[i] = columns[i].GetValue(row) ?? DBNull.Value;
                 table.Rows.Add(values);
             }
             return table;

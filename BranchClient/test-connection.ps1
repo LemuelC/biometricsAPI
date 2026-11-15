@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Steps: config -> DNS -> TCP port -> API reachable -> API key (/api/ping)
-         -> branch database -> m_employee columns.
+         -> branch database -> columns of every table in tables.ps1.
   Each step prints [ OK ] or [FAIL] with the reason; later steps still run.
   Exit code = number of failed steps (0 = all good).
 
@@ -20,27 +20,8 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Net.Http
 
-# Same columns sync-employees.ps1 reads from the branch's dbo.m_employee.
-$Columns = @(
-    'EmployeeID', 'EmployeeCode', 'IdCode', 'Surname', 'FirstName', 'MiddleName',
-    'NameExtention', 'FullName', 'ResidentialAddress', 'ResidentialZipCode', 'ResidentialTelephone',
-    'EmailAddress', 'CellPhone', 'DateOfBirth', 'PlaceOfBirth', 'Sex', 'CivilStatus',
-    'CivilStatusOther', 'Citizenship', 'Height', 'Weight', 'BloodType', 'HDMFIdNo', 'PHICIdNo',
-    'SSSNo', 'TIN', 'TaxCodeID', 'BankAccountNo', 'DepartmentID', 'PositionID', 'Department',
-    'ShiftID', 'HourlyRate', 'MonthlyRate', 'DailyRate', 'DateHired', 'WorkStatus',
-    'HDMFEmployee', 'HDMFEmployer', 'DateResigned', 'AllowsLate', 'PHICBracketID', 'SSSBracketID',
-    'ProbationaryDate', 'IncludeSSS', 'IncludeHDMF', 'IncludePHIC', 'IncludeTax',
-    'ReasonforResignation', 'FinalPayDate', 'EmploymentStatus', 'AllowsUT', 'Allowance',
-    'AllowsAbsences', 'Remarks', 'IsSave', 'IsDeleted', 'EncodedByID', 'EncodedOn',
-    'IsNoPunch', 'WorkDays'
-)
-
-# NOT NULL in the central table; other columns may be missing (sync sends them as null).
-$RequiredColumns = @(
-    'EmployeeID', 'ShiftID', 'HourlyRate', 'MonthlyRate', 'DailyRate', 'HDMFEmployee', 'HDMFEmployer',
-    'AllowsLate', 'PHICBracketID', 'SSSBracketID', 'IncludeSSS', 'IncludeHDMF', 'IncludePHIC', 'IncludeTax',
-    'AllowsUT', 'Allowance', 'AllowsAbsences', 'IsSave', 'IsDeleted', 'EncodedByID'
-)
+# The tables and columns sync.ps1 sends.
+. (Join-Path $PSScriptRoot 'tables.ps1')
 
 $script:failures = 0
 
@@ -102,8 +83,8 @@ $configOk = Invoke-Step "Read config ($ConfigPath)" {
 
     $source = if ($config.ApiKeyProtected) { "encrypted (-SaveKey, user $env:USERDOMAIN\$env:USERNAME)" } elseif ($config.ApiKey) { 'plain text in config' } else { 'MISSING' }
     try { $script:apiKey = Get-ApiKey $config }
-    catch { throw "API key could not be decrypted. It was saved by a different Windows user or PC: run sync-employees.bat -SaveKey again as $env:USERDOMAIN\$env:USERNAME." }
-    if (-not $apiKey) { throw 'No API key. Run sync-employees.bat -SaveKey.' }
+    catch { throw "API key could not be decrypted. It was saved by a different Windows user or PC: run sync.bat -SaveKey again as $env:USERDOMAIN\$env:USERNAME." }
+    if (-not $apiKey) { throw 'No API key. Run sync.bat -SaveKey.' }
 
     $csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder $config.ConnectionString
     @(
@@ -182,43 +163,51 @@ if ($configOk) {
         $conn.Open()
         try {
             $cmd = $conn.CreateCommand()
-            $cmd.CommandText = "SELECT @@SERVERNAME, DB_NAME(), SUSER_SNAME(), CASE WHEN OBJECT_ID('dbo.m_employee') IS NULL THEN -1 ELSE (SELECT COUNT(*) FROM dbo.m_employee) END"
+            $cmd.CommandText = "SELECT @@SERVERNAME, DB_NAME(), SUSER_SNAME()"
             $r = $cmd.ExecuteReader(); $r.Read() | Out-Null
-            $rows = $r.GetInt32(3)
             $info = "Connected to $($r.GetString(0)) / $($r.GetString(1)) as $($r.GetString(2))"
             $r.Close()
-            if ($rows -lt 0) { throw "$info`nTable dbo.m_employee does not exist in this database." }
-            @($info, "dbo.m_employee has $rows rows")
+            $info
         }
         finally { $conn.Close() }
     }
 
-    # 7. Columns ----------------------------------------------------------------
+    # 7. Each synced table: exists, row count, columns ----------------------------
     if ($dbOk) {
-        Invoke-Step 'dbo.m_employee has the columns the sync needs' {
-            $conn = New-Object System.Data.SqlClient.SqlConnection $config.ConnectionString
-            $conn.Open()
-            try {
-                $cmd = $conn.CreateCommand()
-                $cmd.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'm_employee'"
-                $have = @{}
-                $r = $cmd.ExecuteReader()
-                while ($r.Read()) { $have[$r.GetString(0)] = $true }
-                $r.Close()
-            }
-            finally { $conn.Close() }
-            $missing = @($Columns | Where-Object { -not $have.ContainsKey($_) })
-            $missingRequired = @($missing | Where-Object { $RequiredColumns -contains $_ })
-            if ($missingRequired.Count -gt 0) { throw "Missing required column(s): $($missingRequired -join ', ')" }
-            if ($missing.Count -gt 0) { "$($Columns.Count - $missing.Count) of $($Columns.Count) present. Optional, not in this table (sent as null): $($missing -join ', ')" }
-            else { "All $($Columns.Count) columns present." }
-        } | Out-Null
+        foreach ($def in $SyncTables) {
+            Invoke-Step "dbo.$($def.Name) has the columns the sync needs" {
+                $conn = New-Object System.Data.SqlClient.SqlConnection $config.ConnectionString
+                $conn.Open()
+                try {
+                    $cmd = $conn.CreateCommand()
+                    $cmd.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = @t"
+                    $cmd.Parameters.AddWithValue('@t', $def.Name) | Out-Null
+                    $have = @{}
+                    $r = $cmd.ExecuteReader()
+                    while ($r.Read()) { $have[$r.GetString(0)] = $true }
+                    $r.Close()
+                    if ($have.Count -eq 0) { throw "Table dbo.$($def.Name) does not exist in this database." }
+
+                    $cmd.Parameters.Clear()
+                    $cmd.CommandText = "SELECT COUNT(*) FROM dbo.[$($def.Name)]"
+                    $rows = [int]$cmd.ExecuteScalar()
+                }
+                finally { $conn.Close() }
+
+                $missing = @($def.Columns | Where-Object { -not $have.ContainsKey($_) })
+                $missingRequired = @($missing | Where-Object { $def.Required -contains $_ })
+                if ($missingRequired.Count -gt 0) { throw "Missing required column(s): $($missingRequired -join ', ')" }
+                $count = $def.Columns.Count
+                if ($missing.Count -gt 0) { "$rows rows. $($count - $missing.Count) of $count columns present. Optional, not in this table (sent as null): $($missing -join ', ')" }
+                else { "$rows rows. All $count columns present." }
+            } | Out-Null
+        }
     }
 }
 
 Write-Host ('-' * 70)
 if ($script:failures -eq 0) {
-    Write-Host 'All checks passed. sync-employees.bat should work.' -ForegroundColor Green
+    Write-Host 'All checks passed. sync.bat should work.' -ForegroundColor Green
 }
 else {
     Write-Host "$script:failures check(s) failed - see [FAIL] lines above." -ForegroundColor Red

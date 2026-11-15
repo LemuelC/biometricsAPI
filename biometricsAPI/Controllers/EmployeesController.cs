@@ -1,31 +1,21 @@
-using System.Security.Claims;
 using biometricsAPI.Data;
 using biometricsAPI.Models;
-using biometricsAPI.Security;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace biometricsAPI.Controllers
 {
-    [ApiController]
     [Route("api/employees")]
-    [Authorize]
-    public class EmployeesController : ControllerBase
+    public class EmployeesController : BranchControllerBase
     {
-        private const int MaxBatchSize = 5000;
-
         private readonly AppDbContext _db;
-        private readonly EmployeeRepository _repo;
+        private readonly UpsertRepository _repo;
 
-        public EmployeesController(AppDbContext db, EmployeeRepository repo)
+        public EmployeesController(AppDbContext db, UpsertRepository repo)
         {
             _db = db;
             _repo = repo;
         }
-
-        // Set by ApiKeyAuthenticationHandler from the caller's API key.
-        private Guid BranchGuid => Guid.Parse(User.FindFirstValue(ApiKeyAuthenticationHandler.BranchClaim)!);
 
         /// <summary>
         /// UPSERT a batch of employees for the calling branch.
@@ -33,19 +23,8 @@ namespace biometricsAPI.Controllers
         /// </summary>
         [HttpPost("upsert")]
         [RequestSizeLimit(50_000_000)]
-        public async Task<ActionResult<UpsertResult>> Upsert([FromBody] List<EmployeeDto> employees, CancellationToken ct)
-        {
-            if (employees.Count == 0)
-                return BadRequest("No employees sent.");
-            if (employees.Count > MaxBatchSize)
-                return BadRequest($"Send at most {MaxBatchSize} employees per request.");
-
-            var duplicates = employees.GroupBy(e => e.EmployeeID).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
-            if (duplicates.Count > 0)
-                return BadRequest($"Duplicate EmployeeID in batch: {string.Join(", ", duplicates)}");
-
-            return await _repo.UpsertAsync(BranchGuid, employees, ct);
-        }
+        public Task<ActionResult<UpsertResult>> Upsert([FromBody] List<EmployeeDto> employees, CancellationToken ct) =>
+            UpsertBatch(_repo, "m_employee", employees, e => e.EmployeeID, ct);
 
         /// <summary>Employees already stored for the calling branch.</summary>
         [HttpGet]

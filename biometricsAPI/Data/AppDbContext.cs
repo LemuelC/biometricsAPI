@@ -9,6 +9,7 @@ namespace biometricsAPI.Data
 
         public DbSet<ApiClient> ApiClients => Set<ApiClient>();
         public DbSet<Employee> Employees => Set<Employee>();
+        public DbSet<Shifting> Shifting => Set<Shifting>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -24,6 +25,13 @@ namespace biometricsAPI.Data
                 e.HasKey(x => x.BioEmployeeGUID);
                 e.HasIndex(x => new { x.BranchGUID, x.EmployeeID }).IsUnique();
                 e.Property(x => x.DateResigned).HasColumnType("date");
+            });
+
+            modelBuilder.Entity<Shifting>(e =>
+            {
+                e.ToTable("t_shifting");
+                e.HasKey(x => x.bioShiftingGUID);
+                e.HasIndex(x => new { x.BranchGUID, x.ShiftingID }).IsUnique();
             });
         }
     }

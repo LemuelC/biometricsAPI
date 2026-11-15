@@ -81,6 +81,4 @@ namespace biometricsAPI.Models
         public Guid BioEmployeeGUID { get; set; }
         public Guid BranchGUID { get; set; }
     }
-
-    public record UpsertResult(int Received, int Inserted, int Updated, int Unchanged);
 }
