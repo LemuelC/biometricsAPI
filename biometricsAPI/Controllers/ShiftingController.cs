@@ -26,16 +26,27 @@ namespace biometricsAPI.Controllers
         public Task<ActionResult<UpsertResult>> Upsert([FromBody] List<ShiftingDto> rows, CancellationToken ct) =>
             UpsertBatch(_repo, "t_shifting", rows, s => s.ShiftingID, ct);
 
-        /// <summary>Shifting rows already stored for the calling branch, newest shift first.</summary>
+        /// <summary>
+        /// Shifting rows already stored for the calling branch, newest shift first.
+        /// Optional from / to (yyyy-MM-dd, both inclusive) filter on ShiftDate.
+        /// </summary>
         [HttpGet]
-        public async Task<ActionResult<List<Shifting>>> List([FromQuery] int page = 1, [FromQuery] int pageSize = 100, CancellationToken ct = default)
+        public async Task<ActionResult<List<Shifting>>> List([FromQuery] DateTime? from, [FromQuery] DateTime? to,
+            [FromQuery] int page = 1, [FromQuery] int pageSize = 100, CancellationToken ct = default)
         {
             page = Math.Max(page, 1);
             pageSize = Math.Clamp(pageSize, 1, 1000);
             var branch = BranchGuid;
 
-            return await _db.Shifting.AsNoTracking()
-                .Where(s => s.BranchGUID == branch)
+            var query = _db.Shifting.AsNoTracking().Where(s => s.BranchGUID == branch);
+            if (from is not null) query = query.Where(s => s.ShiftDate >= from.Value.Date);
+            if (to is not null)
+            {
+                var toExclusive = to.Value.Date.AddDays(1);
+                query = query.Where(s => s.ShiftDate < toExclusive);
+            }
+
+            return await query
                 .OrderByDescending(s => s.ShiftDate).ThenByDescending(s => s.ShiftingID)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)

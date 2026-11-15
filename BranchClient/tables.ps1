@@ -5,11 +5,14 @@
 #   Columns  - columns sent. Central-only columns (GUID / BioEmployeeGUID / BranchGUID) are never sent.
 #   Required - NOT NULL centrally: the sync stops if the branch table lacks one.
 #              Any other column the branch table lacks is sent as null.
+#   DateColumn - (optional) date column for the date filter (-Days / -From / -To).
+#              Without it the table is always sent in full (every row, every run).
 $SyncTables = @(
     [pscustomobject]@{
         Name     = 'm_employee'
         Endpoint = 'api/employees/upsert'
         Key      = 'EmployeeID'
+        # No DateColumn: always a full upsert.
         # EmployeeGUID is owned by another application: not synced.
         Columns  = @(
             'EmployeeID', 'EmployeeCode', 'IdCode', 'Surname', 'FirstName', 'MiddleName',
@@ -34,6 +37,7 @@ $SyncTables = @(
         Name     = 't_shifting'
         Endpoint = 'api/shifting/upsert'
         Key      = 'ShiftingID'
+        DateColumn = 'ShiftDate'
         Columns  = @(
             'ShiftingID', 'EmployeeID', 'ShiftDate', 'Location', 'StartTime', 'EndTime', 'TotalMinutes',
             'IsAugmentation', 'IsOvertime', 'IsRestDay', 'EncodedBy', 'EncodedOn', 'OvertimeMinutes'

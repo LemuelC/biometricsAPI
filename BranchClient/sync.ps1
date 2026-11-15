@@ -3,22 +3,38 @@
   Sends this branch's tables (see tables.ps1) to the central biometricsAPI (UPSERT).
 
 .DESCRIPTION
-  For each table: reads it from the branch database, keeps only rows that changed since
-  the last successful run (a hash per row is kept in state\<table>-hashes.json), and posts
-  them in gzip-compressed JSON batches to the table's upsert endpoint.
-  A batch's hashes are saved only after the API accepts it, so a failed run is simply
-  retried by the next run. One table failing does not stop the others.
+  Tables WITHOUT a DateColumn in tables.ps1 (m_employee) are always a full upsert:
+  every row is sent on every run.
+
+  Tables WITH a DateColumn (t_shifting, ...) choose their rows by date:
+    (no option)        rows dated within the last DefaultDays days (sync-config.json,
+                       30 if not set), sending only rows that changed since the last
+                       successful run (a hash per row is kept in state\<table>-hashes.json)
+    -Days N            same, but the last N days
+    -From d [-To d]    every row dated From..To (both inclusive, yyyy-MM-dd), changed or not.
+                       Without -To: From up to the newest row.
+    -Full              every row of the table, changed or not (rows with no date included)
+
+  Rows go in gzip-compressed JSON batches to the table's upsert endpoint; the server only
+  rewrites rows that really differ. A batch's hashes are saved only after the API accepts
+  it, so a failed run is simply retried by the next run. One table failing does not stop
+  the others.
 
 .EXAMPLE
-  sync.bat                        send changed rows of every table
-  sync.bat -Table m_employee      only that table (comma-separate several)
-  sync.bat -Full                  send every row (server still skips unchanged ones)
-  sync.bat -Test                  check API URL + key only
-  sync.bat -SaveKey               store the API key encrypted for this Windows user
+  sync.bat                                     scheduled run: employees in full, shifting last 30 days (changed rows)
+  sync.bat -Days 7                             shifting: last 7 days
+  sync.bat -From 2026-10-01 -To 2026-10-31     shifting: all of October
+  sync.bat -Full                               every row of every table
+  sync.bat -Table t_shifting -Full             only that table (comma-separate several)
+  sync.bat -Test                               check API URL + key only
+  sync.bat -SaveKey                            store the API key encrypted for this Windows user
 #>
 param(
     [string[]]$Table,
     [switch]$Full,
+    [int]$Days,
+    [string]$From,
+    [string]$To,
     [switch]$Test,
     [switch]$SaveKey,
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'sync-config.json')
@@ -76,6 +92,24 @@ function Compress-Gzip([byte[]]$Bytes) {
 function Sync-Table($Def) {
     $name = $Def.Name
     $statePath = Join-Path $stateDir "$name-hashes.json"
+    $dateCol = $Def.DateColumn
+
+    # Which rows to read, and whether to send them even if unchanged since the last run.
+    $where = ''; $fromDate = $null; $toDate = $null
+    if (-not $dateCol) { $force = $true; $mode = 'full upsert (always for this table)' }
+    elseif ($Full) { $force = $true; $mode = 'full upsert' }
+    elseif ($rangeFrom) {
+        $force = $true
+        $fromDate = $rangeFrom; $toDate = $rangeToExcl
+        $mode = "$dateCol from $($rangeFrom.ToString('yyyy-MM-dd'))" +
+            $(if ($rangeToExcl) { ' to ' + $rangeToExcl.AddDays(-1).ToString('yyyy-MM-dd') } else { ' onward' })
+    }
+    else {
+        $force = $false
+        $fromDate = (Get-Date).Date.AddDays(-$windowDays)
+        $mode = "$dateCol in the last $windowDays days ($($fromDate.ToString('yyyy-MM-dd')) onward), changed rows only"
+    }
+    if ($fromDate) { $where = " WHERE [$dateCol] >= @from" + $(if ($toDate) { " AND [$dateCol] < @to" }) }
 
     # 1. Read the branch table (only the columns it actually has).
     $table = New-Object System.Data.DataTable
@@ -96,9 +130,12 @@ function Sync-Table($Def) {
         $missingRequired = @($missing | Where-Object { $Def.Required -contains $_ })
         if ($missingRequired.Count -gt 0) { throw "Branch $name is missing required column(s): $($missingRequired -join ', ')" }
         if ($missing.Count -gt 0) { Write-Log "[$name] no column(s) $($missing -join ', ') in the branch table - sending them as null." }
+        if ($where -and -not $branchColumns.ContainsKey($dateCol)) { throw "Branch $name has no $dateCol column to filter by date. Use -Full." }
 
         $cmd.Parameters.Clear()
-        $cmd.CommandText = 'SELECT ' + (($present | ForEach-Object { "[$_]" }) -join ', ') + " FROM dbo.[$name]"
+        $cmd.CommandText = 'SELECT ' + (($present | ForEach-Object { "[$_]" }) -join ', ') + " FROM dbo.[$name]" + $where
+        if ($fromDate) { $cmd.Parameters.Add('@from', [Data.SqlDbType]::DateTime).Value = $fromDate }
+        if ($toDate) { $cmd.Parameters.Add('@to', [Data.SqlDbType]::DateTime).Value = $toDate }
         $cmd.CommandTimeout = 120
         $table.Load($cmd.ExecuteReader())
     }
@@ -122,12 +159,12 @@ function Sync-Table($Def) {
         }
         $id = [string]$obj[$Def.Key]
         $hash = [Convert]::ToBase64String($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($parts -join [char]31)))
-        if ($Full -or $known[$id] -ne $hash) {
+        if ($force -or $known[$id] -ne $hash) {
             $pending.Add([pscustomobject]@{ Id = $id; Hash = $hash; Row = $obj })
         }
     }
 
-    Write-Log "[$name] read $($table.Rows.Count) rows, $($pending.Count) to send$(if ($Full) { ' (full)' })."
+    Write-Log "[$name] $mode : read $($table.Rows.Count) rows, $($pending.Count) to send."
     if ($pending.Count -eq 0) { return }
 
     # 3. Send in batches.
@@ -168,6 +205,30 @@ try {
         Write-Host "API key saved (encrypted for $env:USERDOMAIN\$env:USERNAME)."
         exit 0
     }
+
+    # Date filter options (tables with a DateColumn only).
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $parseDate = {
+        param($text, $option)
+        $d = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($text, 'yyyy-MM-dd', $inv, [Globalization.DateTimeStyles]::None, [ref]$d)) {
+            throw "-$option must be a date like 2026-10-31 (yyyy-MM-dd), got '$text'."
+        }
+        $d
+    }
+    $daysGiven = $PSBoundParameters.ContainsKey('Days')
+    if ($To -and -not $From) { throw '-To needs -From too, e.g. -From 2026-10-01 -To 2026-10-31.' }
+    if (@(@($Full.IsPresent, $daysGiven, [bool]$From) | Where-Object { $_ }).Count -gt 1) {
+        throw 'Use only one of -Full, -Days, or -From/-To.'
+    }
+    if ($daysGiven -and $Days -lt 1) { throw '-Days must be 1 or more.' }
+    $rangeFrom = $null; $rangeToExcl = $null
+    if ($From) { $rangeFrom = & $parseDate $From 'From' }
+    if ($To) {
+        $rangeToExcl = (& $parseDate $To 'To').AddDays(1)   # -To is inclusive
+        if ($rangeToExcl -le $rangeFrom) { throw "-To ($To) is before -From ($From)." }
+    }
+    $windowDays = if ($daysGiven) { $Days } elseif ($config.DefaultDays) { [int]$config.DefaultDays } else { 30 }
 
     $baseUrl = $config.ApiUrl.TrimEnd('/')
     $batchSize = if ($config.BatchSize) { [int]$config.BatchSize } else { 1000 }

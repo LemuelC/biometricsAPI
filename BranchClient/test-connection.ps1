@@ -197,9 +197,13 @@ if ($configOk) {
                 $missing = @($def.Columns | Where-Object { -not $have.ContainsKey($_) })
                 $missingRequired = @($missing | Where-Object { $def.Required -contains $_ })
                 if ($missingRequired.Count -gt 0) { throw "Missing required column(s): $($missingRequired -join ', ')" }
+                if ($def.DateColumn -and -not $have.ContainsKey($def.DateColumn)) {
+                    throw "No $($def.DateColumn) column: the date filter can't work (only sync.bat -Full would)."
+                }
                 $count = $def.Columns.Count
-                if ($missing.Count -gt 0) { "$rows rows. $($count - $missing.Count) of $count columns present. Optional, not in this table (sent as null): $($missing -join ', ')" }
-                else { "$rows rows. All $count columns present." }
+                $sync = if ($def.DateColumn) { "Date filter on $($def.DateColumn)." } else { 'Always full upsert.' }
+                if ($missing.Count -gt 0) { "$rows rows. $($count - $missing.Count) of $count columns present. Optional, not in this table (sent as null): $($missing -join ', '). $sync" }
+                else { "$rows rows. All $count columns present. $sync" }
             } | Out-Null
         }
     }
