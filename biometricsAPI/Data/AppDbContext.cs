@@ -21,7 +21,7 @@ namespace biometricsAPI.Data
             modelBuilder.Entity<Employee>(e =>
             {
                 e.ToTable("m_employee");
-                e.HasKey(x => x.GUID);
+                e.HasKey(x => x.BioEmployeeGUID);
                 e.HasIndex(x => new { x.BranchGUID, x.EmployeeID }).IsUnique();
                 e.Property(x => x.DateResigned).HasColumnType("date");
             });

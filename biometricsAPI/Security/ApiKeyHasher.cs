@@ -33,7 +33,11 @@ namespace biometricsAPI.Security
             Console.WriteLine($"Swagger Authorize value:                              {branchGuid}:{key}");
             Console.WriteLine();
             Console.WriteLine("Run on the central database:");
-            Console.WriteLine($"INSERT INTO dbo.api_client (BranchGUID, BranchName, ApiKeyHash) VALUES ('{branchGuid}', N'{name}', 0x{hashHex});");
+            // Update-or-insert, so re-running genkey for a branch replaces its old key.
+            Console.WriteLine($"IF EXISTS (SELECT 1 FROM dbo.api_client WHERE BranchGUID = '{branchGuid}')");
+            Console.WriteLine($"    UPDATE dbo.api_client SET BranchName = N'{name}', ApiKeyHash = 0x{hashHex}, IsActive = 1 WHERE BranchGUID = '{branchGuid}';");
+            Console.WriteLine("ELSE");
+            Console.WriteLine($"    INSERT INTO dbo.api_client (BranchGUID, BranchName, ApiKeyHash) VALUES ('{branchGuid}', N'{name}', 0x{hashHex});");
             return 0;
         }
     }

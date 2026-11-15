@@ -4,15 +4,15 @@ namespace biometricsAPI.Models
 {
     /// <summary>
     /// One employee row as the branch sends it (the branch's m_employee columns).
-    /// GUID and BranchGUID are NOT sent: the server assigns GUID and takes
-    /// BranchGUID from the authenticated API key, so a branch can only write its own rows.
+    /// BioEmployeeGUID and BranchGUID are NOT sent: the database generates BioEmployeeGUID on
+    /// insert and BranchGUID comes from the authenticated API key, so a branch can only write
+    /// its own rows. EmployeeGUID belongs to another application and is not synced.
     ///
     /// Property ORDER must match dbo.tt_m_employee (table-valued parameters bind by position).
     /// </summary>
     public class EmployeeDto
     {
         public int EmployeeID { get; set; }
-        public Guid? EmployeeGUID { get; set; }
         [StringLength(10)] public string? EmployeeCode { get; set; }
         [StringLength(10)] public string? IdCode { get; set; }
         [StringLength(50)] public string? Surname { get; set; }
@@ -78,7 +78,7 @@ namespace biometricsAPI.Models
     /// <summary>A row of the central dbo.m_employee table.</summary>
     public class Employee : EmployeeDto
     {
-        public Guid GUID { get; set; }
+        public Guid BioEmployeeGUID { get; set; }
         public Guid BranchGUID { get; set; }
     }
 

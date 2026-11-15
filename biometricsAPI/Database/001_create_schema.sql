@@ -1,12 +1,14 @@
 /* =====================================================================
    biometricsAPI - central database schema
-   Run once against the central (merged) database.
+   Run against the central (merged) database. Safe to re-run: it creates
+   what is missing, upgrades an older m_employee, and always recreates
+   the table type + upsert procedure (so changes to them are applied).
    ===================================================================== */
 
 /* ---------------------------------------------------------------------
    api_client: one row per branch allowed to call the API.
    ApiKeyHash = SHA-256 of the branch's API key (the raw key is never stored).
-   Generate a key + INSERT statement with:  dotnet run -- genkey <BranchGUID> "<Branch name>"
+   Generate a key + SQL with:  dotnet run -- genkey <BranchGUID> "<Branch name>"
    --------------------------------------------------------------------- */
 IF OBJECT_ID('dbo.api_client', 'U') IS NULL
 CREATE TABLE [dbo].[api_client](
@@ -20,16 +22,18 @@ CREATE TABLE [dbo].[api_client](
 GO
 
 /* ---------------------------------------------------------------------
-   m_employee: same columns as the branch table, plus
-     GUID       - central primary key
-     BranchGUID - which branch the row came from
+   m_employee: the branch's columns, plus
+     BioEmployeeGUID - central primary key, generated (NEWID) on insert
+     BranchGUID      - which branch the row came from
    (BranchGUID, EmployeeID) is unique and identifies the source row.
+   EmployeeGUID belongs to another application: the sync never reads or
+   writes it.
    PK is nonclustered (random GUIDs fragment a clustered index);
    the unique key is clustered since every lookup goes through it.
    --------------------------------------------------------------------- */
 IF OBJECT_ID('dbo.m_employee', 'U') IS NULL
 CREATE TABLE [dbo].[m_employee](
-	[GUID] [uniqueidentifier] NOT NULL CONSTRAINT [DF_m_employee_GUID] DEFAULT (NEWID()),
+	[BioEmployeeGUID] [uniqueidentifier] NOT NULL CONSTRAINT [DF_m_employee_BioEmployeeGUID] DEFAULT (NEWID()),
 	[EmployeeID] [int] NOT NULL,
 	[EmployeeGUID] [uniqueidentifier] NULL,
 	[EmployeeCode] [nvarchar](10) NULL,
@@ -93,20 +97,46 @@ CREATE TABLE [dbo].[m_employee](
 	[IsNoPunch] [bit] NULL,
 	[WorkDays] [int] NULL,
 	[BranchGUID] [uniqueidentifier] NOT NULL,
-	CONSTRAINT [PK_m_employee] PRIMARY KEY NONCLUSTERED ([GUID]),
+	CONSTRAINT [PK_m_employee] PRIMARY KEY NONCLUSTERED ([BioEmployeeGUID]),
 	CONSTRAINT [UQ_m_employee_Branch_EmployeeID] UNIQUE CLUSTERED ([BranchGUID], [EmployeeID])
 );
+GO
+
+/* Upgrade: an earlier version of this script named the primary key column [GUID]. */
+IF COL_LENGTH('dbo.m_employee', 'GUID') IS NOT NULL AND COL_LENGTH('dbo.m_employee', 'BioEmployeeGUID') IS NULL
+BEGIN
+	EXEC sp_rename 'dbo.m_employee.GUID', 'BioEmployeeGUID', 'COLUMN';
+	IF OBJECT_ID('dbo.DF_m_employee_GUID', 'D') IS NOT NULL
+		EXEC sp_rename 'dbo.DF_m_employee_GUID', 'DF_m_employee_BioEmployeeGUID', 'OBJECT';
+END
+GO
+
+/* A table created by hand may lack the (BranchGUID, EmployeeID) unique key: add it.
+   Fails with a duplicate-key error if the table already holds duplicates. */
+IF NOT EXISTS (SELECT 1 FROM sys.indexes
+               WHERE object_id = OBJECT_ID('dbo.m_employee') AND name = 'UQ_m_employee_Branch_EmployeeID')
+	CREATE UNIQUE NONCLUSTERED INDEX [UQ_m_employee_Branch_EmployeeID] ON [dbo].[m_employee] ([BranchGUID], [EmployeeID]);
+GO
+
+/* ---------------------------------------------------------------------
+   Drop the procedure first (it depends on the type), then the type.
+   Both are recreated below.
+   --------------------------------------------------------------------- */
+IF OBJECT_ID('dbo.usp_m_employee_upsert', 'P') IS NOT NULL
+	DROP PROCEDURE [dbo].[usp_m_employee_upsert];
+IF TYPE_ID('dbo.tt_m_employee') IS NOT NULL
+	DROP TYPE [dbo].[tt_m_employee];
 GO
 
 /* ---------------------------------------------------------------------
    Table type used to send a batch of employees in one call.
    Column ORDER must match EmployeeDto property order in the API
    (table-valued parameters bind by position).
+   No BioEmployeeGUID / BranchGUID (assigned centrally) and no
+   EmployeeGUID (owned by another application).
    --------------------------------------------------------------------- */
-IF TYPE_ID('dbo.tt_m_employee') IS NULL
 CREATE TYPE [dbo].[tt_m_employee] AS TABLE(
 	[EmployeeID] [int] NOT NULL PRIMARY KEY,
-	[EmployeeGUID] [uniqueidentifier] NULL,
 	[EmployeeCode] [nvarchar](10) NULL,
 	[IdCode] [nvarchar](10) NULL,
 	[Surname] [nvarchar](50) NULL,
@@ -172,14 +202,15 @@ GO
 
 /* ---------------------------------------------------------------------
    UPSERT a batch of employees for one branch.
-     - rows whose (BranchGUID, EmployeeID) exist and differ  -> UPDATE
-     - rows that do not exist yet                            -> INSERT
-     - rows that exist and are identical                     -> untouched
+     - (BranchGUID, EmployeeID) exists and differs  -> UPDATE (BioEmployeeGUID kept)
+     - (BranchGUID, EmployeeID) does not exist      -> INSERT with BioEmployeeGUID = NEWID()
+     - exists and identical                         -> untouched
+   EmployeeGUID is never touched.
    UPDLOCK + HOLDLOCK on the target makes concurrent syncs from the
    same branch safe (no duplicate-key race between UPDATE and INSERT).
    Returns one row: Inserted, Updated, Unchanged.
    --------------------------------------------------------------------- */
-CREATE OR ALTER PROCEDURE [dbo].[usp_m_employee_upsert]
+CREATE PROCEDURE [dbo].[usp_m_employee_upsert]
 	@BranchGUID uniqueidentifier,
 	@Rows dbo.tt_m_employee READONLY
 AS
@@ -192,7 +223,6 @@ BEGIN
 	BEGIN TRANSACTION;
 
 	UPDATE t SET
-		t.[EmployeeGUID] = s.[EmployeeGUID],
 		t.[EmployeeCode] = s.[EmployeeCode],
 		t.[IdCode] = s.[IdCode],
 		t.[Surname] = s.[Surname],
@@ -258,7 +288,7 @@ BEGIN
 		ON t.[BranchGUID] = @BranchGUID AND t.[EmployeeID] = s.[EmployeeID]
 	-- only touch rows that actually changed (EXCEPT treats NULL = NULL)
 	WHERE EXISTS (
-		SELECT s.[EmployeeGUID], s.[EmployeeCode], s.[IdCode], s.[Surname], s.[FirstName], s.[MiddleName],
+		SELECT s.[EmployeeCode], s.[IdCode], s.[Surname], s.[FirstName], s.[MiddleName],
 			s.[NameExtention], s.[FullName], s.[ResidentialAddress], s.[ResidentialZipCode], s.[ResidentialTelephone],
 			s.[EmailAddress], s.[CellPhone], s.[DateOfBirth], s.[PlaceOfBirth], s.[Sex], s.[CivilStatus],
 			s.[CivilStatusOther], s.[Citizenship], s.[Height], s.[Weight], s.[BloodType], s.[HDMFIdNo], s.[PHICIdNo],
@@ -270,7 +300,7 @@ BEGIN
 			s.[AllowsAbsences], s.[Remarks], s.[IsSave], s.[IsDeleted], s.[EncodedByID], s.[EncodedOn],
 			s.[IsNoPunch], s.[WorkDays]
 		EXCEPT
-		SELECT t.[EmployeeGUID], t.[EmployeeCode], t.[IdCode], t.[Surname], t.[FirstName], t.[MiddleName],
+		SELECT t.[EmployeeCode], t.[IdCode], t.[Surname], t.[FirstName], t.[MiddleName],
 			t.[NameExtention], t.[FullName], t.[ResidentialAddress], t.[ResidentialZipCode], t.[ResidentialTelephone],
 			t.[EmailAddress], t.[CellPhone], t.[DateOfBirth], t.[PlaceOfBirth], t.[Sex], t.[CivilStatus],
 			t.[CivilStatusOther], t.[Citizenship], t.[Height], t.[Weight], t.[BloodType], t.[HDMFIdNo], t.[PHICIdNo],
@@ -285,8 +315,8 @@ BEGIN
 	SET @Updated = @@ROWCOUNT;
 
 	INSERT INTO dbo.m_employee (
-		[GUID], [BranchGUID],
-		[EmployeeID], [EmployeeGUID], [EmployeeCode], [IdCode], [Surname], [FirstName], [MiddleName],
+		[BioEmployeeGUID], [BranchGUID],
+		[EmployeeID], [EmployeeCode], [IdCode], [Surname], [FirstName], [MiddleName],
 		[NameExtention], [FullName], [ResidentialAddress], [ResidentialZipCode], [ResidentialTelephone],
 		[EmailAddress], [CellPhone], [DateOfBirth], [PlaceOfBirth], [Sex], [CivilStatus],
 		[CivilStatusOther], [Citizenship], [Height], [Weight], [BloodType], [HDMFIdNo], [PHICIdNo],
@@ -299,7 +329,7 @@ BEGIN
 		[IsNoPunch], [WorkDays])
 	SELECT
 		NEWID(), @BranchGUID,
-		s.[EmployeeID], s.[EmployeeGUID], s.[EmployeeCode], s.[IdCode], s.[Surname], s.[FirstName], s.[MiddleName],
+		s.[EmployeeID], s.[EmployeeCode], s.[IdCode], s.[Surname], s.[FirstName], s.[MiddleName],
 		s.[NameExtention], s.[FullName], s.[ResidentialAddress], s.[ResidentialZipCode], s.[ResidentialTelephone],
 		s.[EmailAddress], s.[CellPhone], s.[DateOfBirth], s.[PlaceOfBirth], s.[Sex], s.[CivilStatus],
 		s.[CivilStatusOther], s.[Citizenship], s.[Height], s.[Weight], s.[BloodType], s.[HDMFIdNo], s.[PHICIdNo],

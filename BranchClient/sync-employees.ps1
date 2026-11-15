@@ -26,9 +26,10 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Net.Http
 
-# Same columns as EmployeeDto on the API (GUID / BranchGUID are assigned centrally).
+# Same columns as EmployeeDto on the API. Not sent: BioEmployeeGUID / BranchGUID (assigned
+# centrally) and EmployeeGUID (owned by another application).
 $Columns = @(
-    'EmployeeID', 'EmployeeGUID', 'EmployeeCode', 'IdCode', 'Surname', 'FirstName', 'MiddleName',
+    'EmployeeID', 'EmployeeCode', 'IdCode', 'Surname', 'FirstName', 'MiddleName',
     'NameExtention', 'FullName', 'ResidentialAddress', 'ResidentialZipCode', 'ResidentialTelephone',
     'EmailAddress', 'CellPhone', 'DateOfBirth', 'PlaceOfBirth', 'Sex', 'CivilStatus',
     'CivilStatusOther', 'Citizenship', 'Height', 'Weight', 'BloodType', 'HDMFIdNo', 'PHICIdNo',
@@ -39,6 +40,14 @@ $Columns = @(
     'ReasonforResignation', 'FinalPayDate', 'EmploymentStatus', 'AllowsUT', 'Allowance',
     'AllowsAbsences', 'Remarks', 'IsSave', 'IsDeleted', 'EncodedByID', 'EncodedOn',
     'IsNoPunch', 'WorkDays'
+)
+
+# NOT NULL in the central table: the sync stops if the branch table lacks one of these.
+# Any other column the branch table doesn't have is sent as null.
+$RequiredColumns = @(
+    'EmployeeID', 'ShiftID', 'HourlyRate', 'MonthlyRate', 'DailyRate', 'HDMFEmployee', 'HDMFEmployer',
+    'AllowsLate', 'PHICBracketID', 'SSSBracketID', 'IncludeSSS', 'IncludeHDMF', 'IncludePHIC', 'IncludeTax',
+    'AllowsUT', 'Allowance', 'AllowsAbsences', 'IsSave', 'IsDeleted', 'EncodedByID'
 )
 
 $logDir = Join-Path $PSScriptRoot 'logs'
@@ -116,11 +125,27 @@ try {
     # 1. Read the branch table.
     $table = New-Object System.Data.DataTable
     $conn = New-Object System.Data.SqlClient.SqlConnection $config.ConnectionString
-    $cmd = $conn.CreateCommand()
-    $cmd.CommandText = 'SELECT ' + (($Columns | ForEach-Object { "[$_]" }) -join ', ') + ' FROM dbo.m_employee'
-    $cmd.CommandTimeout = 120
     $conn.Open()
-    try { $table.Load($cmd.ExecuteReader()) } finally { $conn.Close() }
+    try {
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'm_employee'"
+        $branchColumns = @{}
+        $reader = $cmd.ExecuteReader()
+        while ($reader.Read()) { $branchColumns[$reader.GetString(0)] = $true }
+        $reader.Close()
+        if ($branchColumns.Count -eq 0) { throw 'Table dbo.m_employee not found in the branch database.' }
+
+        $present = @($Columns | Where-Object { $branchColumns.ContainsKey($_) })
+        $missing = @($Columns | Where-Object { -not $branchColumns.ContainsKey($_) })
+        $missingRequired = @($missing | Where-Object { $RequiredColumns -contains $_ })
+        if ($missingRequired.Count -gt 0) { throw "Branch m_employee is missing required column(s): $($missingRequired -join ', ')" }
+        if ($missing.Count -gt 0) { Write-Log "Branch m_employee has no column(s) $($missing -join ', ') - sending them as null." }
+
+        $cmd.CommandText = 'SELECT ' + (($present | ForEach-Object { "[$_]" }) -join ', ') + ' FROM dbo.m_employee'
+        $cmd.CommandTimeout = 120
+        $table.Load($cmd.ExecuteReader())
+    }
+    finally { $conn.Close() }
 
     # 2. Keep only rows whose content changed since the last successful sync.
     $known = @{}
@@ -134,7 +159,7 @@ try {
         $obj = [ordered]@{}
         $parts = New-Object 'System.Collections.Generic.List[string]'
         foreach ($c in $Columns) {
-            $v = ConvertTo-JsonValue $row[$c]
+            $v = if ($branchColumns.ContainsKey($c)) { ConvertTo-JsonValue $row[$c] } else { $null }
             $obj[$c] = $v
             $parts.Add([string]$v)
         }
