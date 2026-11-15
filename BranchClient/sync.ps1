@@ -26,6 +26,9 @@
   sync.bat -From 2026-10-01 -To 2026-10-31     shifting: all of October
   sync.bat -Full                               every row of every table
   sync.bat -Table t_shifting -Full             only that table (comma-separate several)
+  sync.bat -PayrollPeriod                      the last completed payroll half: run on day 1-15 -> the
+                                               previous month 16..end; run on day 16-31 -> this month 1..15
+                                               (what the scheduled task uses, see install-task.bat)
   sync.bat -Test                               check API URL + key only
   sync.bat -SaveKey                            store the API key encrypted for this Windows user
 #>
@@ -35,6 +38,7 @@ param(
     [int]$Days,
     [string]$From,
     [string]$To,
+    [switch]$PayrollPeriod,
     [switch]$Test,
     [switch]$SaveKey,
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'sync-config.json')
@@ -217,6 +221,20 @@ try {
         $d
     }
     $daysGiven = $PSBoundParameters.ContainsKey('Days')
+    if ($PayrollPeriod) {
+        if ($Full -or $daysGiven -or $From -or $To) { throw 'Use -PayrollPeriod on its own (not with -Full, -Days, -From or -To).' }
+        # The last completed half-month: 1-15 or 16-end of month.
+        $today = (Get-Date).Date
+        if ($today.Day -le 15) {
+            $start = $today.AddDays(1 - $today.Day).AddMonths(-1).AddDays(15)   # previous month, 16th
+            $end = $today.AddDays(-$today.Day)                                  # previous month, last day
+        } else {
+            $start = $today.AddDays(1 - $today.Day)                             # this month, 1st
+            $end = $start.AddDays(14)                                           # this month, 15th
+        }
+        $From = $start.ToString('yyyy-MM-dd'); $To = $end.ToString('yyyy-MM-dd')
+        Write-Log "Payroll period $From to $To"
+    }
     if ($To -and -not $From) { throw '-To needs -From too, e.g. -From 2026-10-01 -To 2026-10-31.' }
     if (@(@($Full.IsPresent, $daysGiven, [bool]$From) | Where-Object { $_ }).Count -gt 1) {
         throw 'Use only one of -Full, -Days, or -From/-To.'
