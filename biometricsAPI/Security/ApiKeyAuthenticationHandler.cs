@@ -9,9 +9,9 @@ using Microsoft.Extensions.Options;
 namespace biometricsAPI.Security
 {
     /// <summary>
-    /// Authenticates a branch from two headers:
-    ///   X-Branch-Id: the branch's BranchGUID
-    ///   X-Api-Key:   the branch's secret key
+    /// Authenticates a branch. Two accepted forms:
+    ///   X-Branch-Id: &lt;BranchGUID&gt;  +  X-Api-Key: &lt;API key&gt;      (branch sync client)
+    ///   X-Api-Key: &lt;BranchGUID&gt;:&lt;API key&gt;                       (Swagger: one field)
     /// The key is hashed and compared to dbo.api_client.ApiKeyHash in constant time.
     /// </summary>
     public class ApiKeyAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
@@ -35,22 +35,38 @@ namespace biometricsAPI.Security
 
         protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
         {
-            if (!Request.Headers.TryGetValue(BranchHeader, out var branchValue) ||
-                !Request.Headers.TryGetValue(KeyHeader, out var keyValue))
-                return AuthenticateResult.NoResult();
+            var keyValue = Request.Headers[KeyHeader].ToString().Trim();
+            var branchValue = Request.Headers[BranchHeader].ToString().Trim();
 
-            var key = keyValue.ToString();
-            if (!Guid.TryParse(branchValue, out var branchGuid) || string.IsNullOrWhiteSpace(key))
-                return AuthenticateResult.Fail("Invalid credentials.");
+            if (keyValue.Length == 0)
+                return AuthenticateResult.Fail($"Missing {KeyHeader} header.");
+
+            // Combined form "<BranchGUID>:<key>" (keys are base64url, so they never contain ':').
+            var separator = keyValue.IndexOf(':');
+            if (separator > 0)
+            {
+                branchValue = keyValue[..separator].Trim();
+                keyValue = keyValue[(separator + 1)..].Trim();
+            }
+
+            if (branchValue.Length == 0)
+                return AuthenticateResult.Fail($"Missing branch: send {BranchHeader}, or {KeyHeader} as \"<BranchGUID>:<key>\".");
+            if (!Guid.TryParse(branchValue, out var branchGuid))
+                return AuthenticateResult.Fail($"\"{branchValue}\" is not a valid BranchGUID.");
 
             var client = await _db.ApiClients.AsNoTracking()
-                .FirstOrDefaultAsync(c => c.BranchGUID == branchGuid && c.IsActive);
+                .FirstOrDefaultAsync(c => c.BranchGUID == branchGuid);
 
-            var suppliedHash = ApiKeyHasher.Hash(key);
-            if (client is null || !CryptographicOperations.FixedTimeEquals(suppliedHash, client.ApiKeyHash))
+            if (client is null || !client.IsActive)
             {
-                Logger.LogWarning("Rejected API key for branch {Branch} from {Ip}", branchGuid, Context.Connection.RemoteIpAddress);
-                return AuthenticateResult.Fail("Invalid credentials.");
+                Logger.LogWarning("Branch {Branch} not registered or inactive ({Ip})", branchGuid, Context.Connection.RemoteIpAddress);
+                return AuthenticateResult.Fail($"Branch {branchGuid} is not registered in dbo.api_client or is inactive.");
+            }
+
+            if (!CryptographicOperations.FixedTimeEquals(ApiKeyHasher.Hash(keyValue), client.ApiKeyHash))
+            {
+                Logger.LogWarning("Wrong API key for branch {Branch} ({Ip})", branchGuid, Context.Connection.RemoteIpAddress);
+                return AuthenticateResult.Fail($"API key does not match branch {branchGuid}.");
             }
 
             var identity = new ClaimsIdentity(new[]
@@ -60,6 +76,18 @@ namespace biometricsAPI.Security
             }, SchemeName);
 
             return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
+        }
+
+        // 401 body says why, so a bad header or unregistered branch is obvious from Swagger/logs.
+        protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
+        {
+            var result = await HandleAuthenticateOnceSafeAsync();
+            Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await Response.WriteAsJsonAsync(new
+            {
+                status = 401,
+                error = result.Failure?.Message ?? "Not authenticated.",
+            });
         }
     }
 }

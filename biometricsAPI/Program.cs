@@ -39,23 +39,16 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.AddSecurityDefinition("BranchId", new OpenApiSecurityScheme
-    {
-        Type = SecuritySchemeType.ApiKey,
-        In = ParameterLocation.Header,
-        Name = ApiKeyAuthenticationHandler.BranchHeader,
-        Description = "Branch GUID",
-    });
+    // One field in Swagger's Authorize dialog: "<BranchGUID>:<API key>".
     c.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
     {
         Type = SecuritySchemeType.ApiKey,
         In = ParameterLocation.Header,
         Name = ApiKeyAuthenticationHandler.KeyHeader,
-        Description = "Branch API key",
+        Description = "Enter BranchGUID:APIKey (colon between, no spaces), e.g. 531F69F9-CBC5-4210-B144-573E21A43874:AbC123...",
     });
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
-        [new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "BranchId" } }] = Array.Empty<string>(),
         [new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "ApiKey" } }] = Array.Empty<string>(),
     });
 });

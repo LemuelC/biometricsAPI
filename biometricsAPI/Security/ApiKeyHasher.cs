@@ -30,6 +30,7 @@ namespace biometricsAPI.Security
             var name = args[2].Replace("'", "''");
 
             Console.WriteLine($"API key (give to the branch, store it nowhere else): {key}");
+            Console.WriteLine($"Swagger Authorize value:                              {branchGuid}:{key}");
             Console.WriteLine();
             Console.WriteLine("Run on the central database:");
             Console.WriteLine($"INSERT INTO dbo.api_client (BranchGUID, BranchName, ApiKeyHash) VALUES ('{branchGuid}', N'{name}', 0x{hashHex});");
