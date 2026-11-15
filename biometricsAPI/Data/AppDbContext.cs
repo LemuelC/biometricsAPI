@@ -10,6 +10,8 @@ namespace biometricsAPI.Data
         public DbSet<ApiClient> ApiClients => Set<ApiClient>();
         public DbSet<Employee> Employees => Set<Employee>();
         public DbSet<Shifting> Shifting => Set<Shifting>();
+        public DbSet<BiometricLog> BiometricLogs => Set<BiometricLog>();
+        public DbSet<AttendanceLog> AttendanceLogs => Set<AttendanceLog>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -32,6 +34,20 @@ namespace biometricsAPI.Data
                 e.ToTable("t_shifting");
                 e.HasKey(x => x.bioShiftingGUID);
                 e.HasIndex(x => new { x.BranchGUID, x.ShiftingID }).IsUnique();
+            });
+
+            modelBuilder.Entity<BiometricLog>(e =>
+            {
+                e.ToTable("t_biometric_logs");
+                e.HasKey(x => x.bioBiometricLogGUID);
+                e.HasIndex(x => new { x.BranchGUID, x.BiometricLogID }).IsUnique();
+            });
+
+            modelBuilder.Entity<AttendanceLog>(e =>
+            {
+                e.ToTable("t_attendance_logs");
+                e.HasKey(x => x.bioAttendanceLogGUID);
+                e.HasIndex(x => new { x.BranchGUID, x.AttendanceLogID }).IsUnique();
             });
         }
     }

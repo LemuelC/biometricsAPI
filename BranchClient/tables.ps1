@@ -43,5 +43,24 @@ $SyncTables = @(
             'IsAugmentation', 'IsOvertime', 'IsRestDay', 'EncodedBy', 'EncodedOn', 'OvertimeMinutes'
         )
         Required = @('ShiftingID')
+    },
+    [pscustomobject]@{
+        Name     = 't_biometric_logs'
+        Endpoint = 'api/biometric-logs/upsert'
+        Key      = 'BiometricLogID'
+        DateColumn = 'LogDateTime'
+        Columns  = @('BiometricLogID', 'EmployeeID', 'LogType', 'LogDateTime')
+        Required = @('BiometricLogID')
+    },
+    [pscustomobject]@{
+        Name     = 't_attendance_logs'
+        Endpoint = 'api/attendance-logs/upsert'
+        Key      = 'AttendanceLogID'
+        DateColumn = 'LogDate'
+        Columns  = @(
+            'AttendanceLogID', 'LogDate', 'LogIN', 'LogOUT', 'EmployeeID', 'TotalMinutes', 'ShiftingID',
+            'WorkMinutes', 'OTMinutes', 'NDMinutes', 'PaidLeave', 'Leave'
+        )
+        Required = @('AttendanceLogID')
     }
 )
